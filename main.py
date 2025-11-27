@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore')
 
 
 
@@ -239,6 +241,140 @@ class LassoComparison:
 
         return objs
 
+    def fista(self, max_iter=1000, lr=None):
+        """标准FISTA：加速的proximal GD"""
+        if lr is None:
+            lr = 1.0 / (self.L + 10) * 2  # 与Proximal GD保持一致的学习率
+
+        x_prev = self.x_init.clone()
+        x = self.x_init.clone()
+        t = torch.tensor(1.0, device=self.device) # 将t初始化为Tensor
+        objs = []
+
+        for i in range(max_iter):
+            # 计算加速点y
+            if i > 0:
+                y = x + ((t - 1) / t) * (x - x_prev)
+            else:
+                y = x.clone()
+
+            # 计算梯度
+            gradient = self.A.T @ (self.A @ y - self.b) # f(y)的梯度 = A^T(Ay - b)
+            grad_norm = torch.norm(gradient)
+            if grad_norm > 1e3:
+                gradient = gradient / grad_norm * 1e3
+
+            # 更新x
+            x_prev = x.clone()
+            x_temp = y - lr * gradient
+            x = self.soft_threshold(x_temp, lr * self.lambda_val)
+
+            # 更新动量参数t
+            t_new = (1 + torch.sqrt(1 + 4 * t ** 2)) / 2
+            t = t_new
+
+            obj = self.obj(x)
+            objs.append(obj.item())
+
+            if obj > 1e10 or np.isnan(obj.item()):
+                objs.extend([1e10] * (max_iter - i - 1))
+                break
+
+        return objs
+
+    def fista_restart(self, max_iter=1000, lr=None):
+        """FISTA+Restart: 带重启的加速proximal GD"""
+        if lr is None:
+            lr = 1.0 / (self.L + 10) * 2
+
+        x_prev = self.x_init.clone()
+        x = self.x_init.clone()
+        t = torch.tensor(1.0, device=self.device)
+        objs = []
+
+        for i in range(max_iter):
+            # 计算加速点y
+            if i > 0:
+                y = x + ((t - 1) / t) * (x - x_prev)
+            else:
+                y = x.clone()
+
+            # 计算梯度
+            gradient = self.A.T @ (self.A @ y - self.b)
+            grad_norm = torch.norm(gradient)
+            if grad_norm > 1e3:
+                gradient = gradient / grad_norm * 1e3
+
+            # 更新x
+            x_prev = x.clone()
+            x_temp = y - lr * gradient
+            x_new = self.soft_threshold(x_temp, lr * self.lambda_val)
+
+            # 重启条件：f(y)的梯度和(x_new - x)的内积大于等于0
+            restart_condition = torch.dot(gradient.flatten(), (x_new - x).flatten()) >= 0
+            if restart_condition:
+                t = torch.tensor(1.0, device=self.device)  # 重置动量参数
+                y = x.clone()  # 重置加速点
+            else:
+                t_new = (1 + torch.sqrt(1 + 4 * t ** 2)) / 2
+                t = t_new
+
+            x = x_new
+
+            obj = self.obj(x)
+            objs.append(obj.item())
+
+            if obj > 1e10 or np.isnan(obj.item()):
+                objs.extend([1e10] * (max_iter - i - 1))
+                break
+
+        return objs
+
+    # def smoothed_fista(self, max_iter=1000, lr=None, epsilon=1e-4):
+    #     """Smoothed FISTA（Huber光滑化的加速GD）"""
+    #     if lr is None:
+    #         lr = 1.0 / (self.L + 10)
+    #
+    #     x_prev = self.x_init.clone()
+    #     x = self.x_init.clone()
+    #     # 将t初始化为Tensor，并放在正确的设备上
+    #     t = torch.tensor(1.0, device=self.device)
+    #     objs = []
+    #
+    #     for i in range(max_iter):
+    #         # 计算加速点y
+    #         if i > 0:
+    #             y = x + ((t - 1) / t) * (x - x_prev)
+    #         else:
+    #             y = x.clone()
+    #
+    #         # 计算Huber光滑化梯度
+    #         loss_gd = self.A.T @ (self.A @ y - self.b)
+    #         l1_smooth_gd = self.lambda_val * y / torch.sqrt(y ** 2 + epsilon)
+    #         gradient = loss_gd + l1_smooth_gd
+    #
+    #         # 梯度裁剪
+    #         grad_norm = torch.norm(gradient)
+    #         if grad_norm > 1e3:
+    #             gradient = gradient / grad_norm * 1e3
+    #
+    #         # 更新x
+    #         x_prev = x.clone()
+    #         x = y - lr * gradient
+    #         x = torch.clamp(x, -1e3, 1e3)
+    #
+    #         # 更新动量参数（使用Tensor操作）
+    #         t_new = (1 + torch.sqrt(1 + 4 * t ** 2)) / 2
+    #         t = t_new
+    #
+    #         obj = self.obj(x)
+    #         objs.append(obj.item())
+    #
+    #         if obj > 1e10 or np.isnan(obj.item()):
+    #             objs.extend([1e10] * (max_iter - i - 1))
+    #             break
+    #
+    #     return objs
 
 
 def create_lasso_problem(n_samples, n_features, sparsity, device):
@@ -276,13 +412,20 @@ if __name__ == "__main__":
 
     # 算法配置
     algo_configs = {
-        'Ordinary GD': {'color': 'blue', 'style': '-', 'width': 2},
-        'Proximal GD': {'color': 'red', 'style': '-', 'width': 2},
-        'Smoothed GD (neighbor=1e-4)': {'color': 'green', 'style': '-', 'width': 2},
-        'Smoothed GD (neighbor=1e-6)': {'color': 'lightgreen', 'style': '--', 'width': 2},
-        'ADMM (punish=0.5)': {'color': 'orange', 'style': '-', 'width': 2},
-        'ADMM (punish=1.0)': {'color': 'yellow', 'style': '--', 'width': 2},
-        'Coordinate Descent': {'color': 'purple', 'style': '-', 'width': 2}
+        'Ordinary GD': {'color': 'blue', 'style': '-', 'width': 3},
+        'Proximal GD': {'color': 'red', 'style': '-', 'width': 3},
+        'Smoothed GD (neighbor=1e-4)': {'color': 'green', 'style': '-', 'width': 3},
+        'Smoothed GD (neighbor=1e-6)': {'color': 'lightgreen', 'style': '--', 'width': 3},
+        'Smoothed GD (neighbor=1e-8)': {'color': 'gray', 'style': '--', 'width': 3},
+        'ADMM (punish=0.3)': {'color': 'brown', 'style': '-', 'width': 3},
+        'ADMM (punish=0.5)': {'color': 'orange', 'style': '-', 'width': 3},
+        'ADMM (punish=1.0)': {'color': 'yellow', 'style': '--', 'width': 3},
+        'ADMM (punish=2.0)': {'color': 'pink', 'style': '--', 'width': 3},
+        'Coordinate Descent': {'color': 'purple', 'style': '-', 'width': 3},
+        # FISTA系列
+        'FISTA': {'color': 'cyan', 'style': '-', 'width': 2},
+        'FISTA+Restart': {'color': 'cyan', 'style': '--', 'width': 2},
+        #'Smoothed FISTA (huber=1e-4)': {'color': 'magenta', 'style': '-', 'width': 2}
     }
 
 
@@ -316,6 +459,14 @@ if __name__ == "__main__":
             [max(obj - f_star, 1e-10) for obj in lasso.smoothed_gd(max_iter=max_iter, epsilon=1e-6)]
         )
 
+        results['Smoothed GD (neighbor=1e-8)'].append(
+            [max(obj - f_star, 1e-10) for obj in lasso.smoothed_gd(max_iter=max_iter, epsilon=1e-8)]
+        )
+
+        results['ADMM (punish=0.3)'].append(
+            [max(obj - f_star, 1e-10) for obj in lasso.admm(max_iter=max_iter, rho=0.3)]
+        )
+
         results['ADMM (punish=0.5)'].append(
             [max(obj - f_star, 1e-10) for obj in lasso.admm(max_iter=max_iter, rho=0.5)]
         )
@@ -324,50 +475,66 @@ if __name__ == "__main__":
             [max(obj - f_star, 1e-10) for obj in lasso.admm(max_iter=max_iter, rho=1.0)]
         )
 
+        results['ADMM (punish=2.0)'].append(
+            [max(obj - f_star, 1e-10) for obj in lasso.admm(max_iter=max_iter, rho=2.0)]
+        )
+
         results['Coordinate Descent'].append(
             [max(obj - f_star, 1e-10) for obj in lasso.coordinate_descent(max_iter=max_iter)]
         )
 
+        # 新增FISTA系列
+        results['FISTA'].append(
+            [max(obj - f_star, 1e-10) for obj in lasso.fista(max_iter=max_iter)]
+        )
+
+        results['FISTA+Restart'].append(
+            [max(obj - f_star, 1e-10) for obj in lasso.fista_restart(max_iter=max_iter)]
+        )
+
+        # results['Smoothed FISTA (huber=1e-4)'].append(
+        #     [max(obj - f_star, 1e-10) for obj in lasso.smoothed_fista(max_iter=max_iter, epsilon=1e-4)]
+        # )
+
     # 绘图
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(12, 7))
     k_axis = np.arange(1, max_iter + 1)
 
     for name, histories in results.items():
-        # 确保所有试验的曲线长度一致（取最短的长度）
+        # 确保所有试验的曲线长度一致，取最短的长度
         min_len = min([len(h) for h in histories])
-        data_matrix = np.array([h[:min_len] for h in histories])  # 形状：(n_trials, min_len)
+        data_matrix = np.array([h[:min_len] for h in histories])
         current_k_axis = k_axis[:min_len]  # 对应的x轴坐标
 
-        # 获取当前算法的配置（颜色、样式等）
-        cfg = algo_configs[name]
+        cfg = algo_configs[name] # 当前算法的颜色、样式等
 
-        # 1. 绘制所有单次试验的曲线（云雾效果）
+        # 绘制所有单次试验的曲线
         for single_trial in data_matrix:
             plt.plot(current_k_axis, single_trial,
                      color=cfg['color'],  # 与算法平均曲线同色
-                     alpha=0.3,  # 透明度极低，形成云雾感
-                     linewidth=0.5,  # 线条极细，避免杂乱
-                     linestyle=cfg['style'])  # 与平均曲线同线条样式（虚线/实线）
+                     alpha=0.2,
+                     linewidth=0.5,
+                     linestyle=cfg['style'])  # 与平均曲线同线条样式
 
-        # 2. 计算并绘制平均曲线（清晰可见）
-        mean_curve = np.mean(data_matrix, axis=0)  # 按列求平均（每个迭代步的均值）
+        # 绘制平均曲线
+        mean_curve = np.mean(data_matrix, axis=0)  # 按列求平均，每个迭代步的均值
         plt.plot(current_k_axis, mean_curve,
-                 color=cfg['color'],  # 与云雾曲线同色
-                 linestyle=cfg['style'],  # 算法对应样式
-                 linewidth=cfg['width'],  # 清晰的线宽
-                 label=name)  # 仅平均曲线添加图例
+                 color=cfg['color'],
+                 linestyle=cfg['style'],
+                 linewidth=cfg['width'],
+                 label=name)
 
     # 图表设置
-    plt.yscale('log')  # 对数坐标更适合展示收敛趋势
+    plt.yscale('log')  # 对数坐标
     plt.xlabel('k', fontsize=12)
     plt.ylabel('$f(x_k) - f^*$', fontsize=12)
     plt.title(f'Lasso Comparison (n_trials={n_trials})', fontsize=14)
-    plt.legend(fontsize=10, loc='upper right', framealpha=0.9)  # 图例仅显示平均曲线
-    plt.grid(True,alpha=0.4)  # 网格线增强可读性
-    plt.ylim(bottom=1e-7, top=1)  # 限制y轴范围，聚焦有效区域
-    plt.xlim(0, 150)  # 限制x轴迭代次数范围
+    plt.legend(fontsize=9, loc='upper right', framealpha=0.9)
+    plt.grid(True,alpha=0.4)
+    plt.ylim(bottom=1e-8, top=1)  # y轴范围
+    plt.xlim(0, 150)  # x轴迭代次数范围
 
-    plt.tight_layout()  # 自动调整布局，避免标签重叠
-    # plt.savefig('lasso_convergence.png', dpi=300, bbox_inches='tight')  # 可选：保存图片
+    plt.tight_layout()
+    # plt.savefig('lasso_convergence.png', dpi=300, bbox_inches='tight')
     plt.show()
 
