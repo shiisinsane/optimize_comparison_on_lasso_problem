@@ -11,8 +11,9 @@ class LassoComparison:
         self.A = A
         self.b = b
         self.n_samples, self.n_features = A.shape
-        self.lambda_val = lambda_val # 稀疏程度，整个矩阵非0元素占比
         self.device = device
+        #self.lambda_val = lambda_val
+        self.lambda_val = torch.tensor(lambda_val, device=self.device) # 稀疏程度，整个矩阵非0元素占比
         #self.x_init = torch.zeros(self.n_features, device=device) # 初始化
         # 小随机初始化：正态分布(0, 0.01)，替换原全零
         self.x_init = torch.randn(self.n_features, device=device) * 0.01
@@ -65,6 +66,7 @@ class LassoComparison:
             if grad_norm > 1e3:
                 gradient = gradient / grad_norm * 1e3
 
+            lr = torch.tensor(lr, device=self.device)
             x = x - lr * gradient
 
             # 投影到合理范围：截断，防止数值太大
@@ -110,6 +112,7 @@ class LassoComparison:
             if grad_norm > 1e3:
                 gradient = gradient / grad_norm * 1e3
 
+            lr = torch.tensor(lr, device=self.device)
             x_temp = x - lr * gradient
             x = self.soft_threshold(x_temp, lr * self.lambda_val)
 
@@ -134,6 +137,8 @@ class LassoComparison:
         if lr is None:
             lr = 1.0 / (self.L + 10)
 
+        epsilon = torch.tensor(epsilon, device=self.device)
+
         x = self.x_init.clone()
         objs = []
 
@@ -148,6 +153,7 @@ class LassoComparison:
             if grad_norm > 1e3:
                 gradient = gradient / grad_norm * 1e3
 
+            lr = torch.tensor(lr, device=self.device)
             x = x - lr * gradient
             x = torch.clamp(x, -1e3, 1e3)
 
@@ -170,6 +176,8 @@ class LassoComparison:
         x = self.x_init.clone()
         z = self.x_init.clone()  # 辅助变量，用于admm分割变量
         u = torch.zeros_like(x)  # 对偶变量，拉格朗日乘子
+
+        rho = torch.tensor(rho, device=self.device)
 
         objs = []
 
@@ -264,6 +272,7 @@ class LassoComparison:
             if grad_norm > 1e3:
                 gradient = gradient / grad_norm * 1e3
 
+            lr = torch.tensor(lr, device=self.device)
             # 更新x
             x_prev = x.clone()
             x_temp = y - lr * gradient
@@ -305,6 +314,7 @@ class LassoComparison:
             if grad_norm > 1e3:
                 gradient = gradient / grad_norm * 1e3
 
+            lr = torch.tensor(lr, device=self.device)
             # 更新x
             x_prev = x.clone()
             x_temp = y - lr * gradient
@@ -398,9 +408,9 @@ if __name__ == "__main__":
     torch.manual_seed(42)
     np.random.seed(42)
 
-    n_trials = 5  # 试验次数
-    n_samples = 100
-    n_features = 200
+    n_trials = 20  # 试验次数
+    n_samples = 500
+    n_features = 300
     sparsity = 0.1 # 稀疏程度
     lambda_val = 0.01  # 正则化系数
     max_iter = 500  # 迭代次数
