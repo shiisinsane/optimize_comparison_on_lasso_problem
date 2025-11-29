@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.linear_model import Lasso
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -12,11 +13,10 @@ class LassoComparison:
         self.b = b
         self.n_samples, self.n_features = A.shape
         self.device = device
-        #self.lambda_val = lambda_val
-        self.lambda_val = torch.tensor(lambda_val, device=self.device) # 稀疏程度，整个矩阵非0元素占比
-        #self.x_init = torch.zeros(self.n_features, device=device) # 初始化
+        self.lambda_val = torch.tensor(lambda_val, device=self.device)
+        self.x_init = torch.zeros(self.n_features, device=device) # 初始化
         # 小随机初始化：正态分布(0, 0.01)，替换原全零
-        self.x_init = torch.randn(self.n_features, device=device) * 0.01
+        #self.x_init = torch.randn(self.n_features, device=device) * 0.01
 
         self.L = torch.linalg.norm(A, ord=2) ** 2  # Lipschitz常数，以下这些方法都使用自适应学习率
 
@@ -48,7 +48,7 @@ class LassoComparison:
         :return: 每一步的obj，列表形式存储
         """
         if lr is None:
-            lr = 1.0 / (self.L + 10)  # 基于Lipschitz的自适应学习率
+            lr = 1.0 / self.L # 基于Lipschitz的自适应学习率
 
         x = self.x_init.clone()
         objs = []
@@ -99,7 +99,7 @@ class LassoComparison:
         :return: 每一步的obj，列表形式存储
         """
         if lr is None:
-            lr = 1.0 / (self.L + 10) * 2
+            lr = 1.0 / self.L
 
         x = self.x_init.clone()
         objs = []
@@ -135,7 +135,7 @@ class LassoComparison:
         :return: 每一步的obj，列表形式存储
         """
         if lr is None:
-            lr = 1.0 / (self.L + 10)
+            lr = 1.0 / self.L
 
         epsilon = torch.tensor(epsilon, device=self.device)
 
@@ -252,7 +252,7 @@ class LassoComparison:
     def fista(self, max_iter=1000, lr=None):
         """标准FISTA：加速的proximal GD"""
         if lr is None:
-            lr = 1.0 / (self.L + 10) * 2  # 与Proximal GD保持一致的学习率
+            lr = 1.0 / self.L  # 与Proximal GD保持一致的学习率
 
         x_prev = self.x_init.clone()
         x = self.x_init.clone()
@@ -294,7 +294,7 @@ class LassoComparison:
     def fista_restart(self, max_iter=1000, lr=None):
         """FISTA+Restart: 带重启的加速proximal GD"""
         if lr is None:
-            lr = 1.0 / (self.L + 10) * 2
+            lr = 1.0 / self.L
 
         x_prev = self.x_init.clone()
         x = self.x_init.clone()
@@ -340,51 +340,30 @@ class LassoComparison:
 
         return objs
 
-    # def smoothed_fista(self, max_iter=1000, lr=None, epsilon=1e-4):
-    #     """Smoothed FISTA（Huber光滑化的加速GD）"""
-    #     if lr is None:
-    #         lr = 1.0 / (self.L + 10)
-    #
-    #     x_prev = self.x_init.clone()
-    #     x = self.x_init.clone()
-    #     # 将t初始化为Tensor，并放在正确的设备上
-    #     t = torch.tensor(1.0, device=self.device)
-    #     objs = []
-    #
-    #     for i in range(max_iter):
-    #         # 计算加速点y
-    #         if i > 0:
-    #             y = x + ((t - 1) / t) * (x - x_prev)
-    #         else:
-    #             y = x.clone()
-    #
-    #         # 计算Huber光滑化梯度
-    #         loss_gd = self.A.T @ (self.A @ y - self.b)
-    #         l1_smooth_gd = self.lambda_val * y / torch.sqrt(y ** 2 + epsilon)
-    #         gradient = loss_gd + l1_smooth_gd
-    #
-    #         # 梯度裁剪
-    #         grad_norm = torch.norm(gradient)
-    #         if grad_norm > 1e3:
-    #             gradient = gradient / grad_norm * 1e3
-    #
-    #         # 更新x
-    #         x_prev = x.clone()
-    #         x = y - lr * gradient
-    #         x = torch.clamp(x, -1e3, 1e3)
-    #
-    #         # 更新动量参数（使用Tensor操作）
-    #         t_new = (1 + torch.sqrt(1 + 4 * t ** 2)) / 2
-    #         t = t_new
-    #
-    #         obj = self.obj(x)
-    #         objs.append(obj.item())
-    #
-    #         if obj > 1e10 or np.isnan(obj.item()):
-    #             objs.extend([1e10] * (max_iter - i - 1))
-    #             break
-    #
-    #     return objs
+    def sklearn_solve(self):
+        """
+        使用scikit-learn求解Lasso问题，返回最优目标函数值
+        """
+        # 将数据转换为numpy格式
+        A_np = self.A.cpu().numpy()
+        b_np = self.b.cpu().numpy()
+        lambda_val = self.lambda_val.item()
+
+        # 我们的目标函数：0.5 * ||Ax - b||^2 + lambda * ||x||_1
+        # sklearn的目标函数：1/(2*n_samples) * ||Ax - b||^2 + alpha * ||x||_1
+        # 所以alpha = lambda / n_samples
+        alpha = lambda_val / self.n_samples
+
+        # 使用sklearn求解Lasso
+        lasso = Lasso(alpha=alpha, fit_intercept=False, max_iter=5000, tol=1e-6)
+        lasso.fit(A_np, b_np)
+
+        # 将解转换回torch张量
+        x_sklearn = torch.tensor(lasso.coef_, device=self.device, dtype=self.A.dtype)
+        # 计算目标函数值
+        obj_val = self.obj(x_sklearn)
+
+        return obj_val.item()
 
 
 def create_lasso_problem(n_samples, n_features, sparsity, device):
@@ -397,7 +376,7 @@ def create_lasso_problem(n_samples, n_features, sparsity, device):
 
     x_true = torch.zeros(n_features, device=device)
     nonzero_idx = torch.randperm(n_features)[:int(sparsity * n_features)] # 随机选择非0元素位置
-    x_true[nonzero_idx] = torch.randn(len(nonzero_idx), device=device) * 0.1  # 真实解的范围
+    x_true[nonzero_idx] = torch.randn(len(nonzero_idx), device=device) * 1.0  # 真实解的范围
 
     b = A @ x_true + 0.01 * torch.randn(n_samples, device=device)  # Ax + \epsilon = b
 
@@ -407,13 +386,15 @@ def create_lasso_problem(n_samples, n_features, sparsity, device):
 if __name__ == "__main__":
     torch.manual_seed(42)
     np.random.seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
 
-    n_trials = 20  # 试验次数
-    n_samples = 500
-    n_features = 300
+    n_trials = 5  # 试验次数
+    n_samples = 200
+    n_features = 500
     sparsity = 0.1 # 稀疏程度
-    lambda_val = 0.01  # 正则化系数
-    max_iter = 500  # 迭代次数
+    lambda_val = 0.1  # 正则化系数
+    max_iter = 300  # 迭代次数
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     print(f"Starting {n_trials} random trials...")
@@ -430,11 +411,12 @@ if __name__ == "__main__":
         'ADMM (punish=0.3)': {'color': 'brown', 'style': '-', 'width': 3},
         'ADMM (punish=0.5)': {'color': 'orange', 'style': '-', 'width': 3},
         'ADMM (punish=1.0)': {'color': 'yellow', 'style': '--', 'width': 3},
+        'ADMM (punish=1.5)': {'color': 'maroon', 'style': '--', 'width': 3},
         'ADMM (punish=2.0)': {'color': 'pink', 'style': '--', 'width': 3},
         'Coordinate Descent': {'color': 'purple', 'style': '-', 'width': 3},
         # FISTA系列
-        'FISTA': {'color': 'cyan', 'style': '-', 'width': 2},
-        'FISTA+Restart': {'color': 'cyan', 'style': '--', 'width': 2},
+        'FISTA': {'color': 'cyan', 'style': '-', 'width': 3},
+        'FISTA+Restart': {'color': 'cyan', 'style': '--', 'width': 3},
         #'Smoothed FISTA (huber=1e-4)': {'color': 'magenta', 'style': '-', 'width': 2}
     }
 
@@ -447,9 +429,8 @@ if __name__ == "__main__":
         A, b, x_true = create_lasso_problem(n_samples, n_features, sparsity, device)
         lasso = LassoComparison(A, b, lambda_val, device)
 
-        # 计算基准：lasso目标函数的近似的理论最小值
-        cd_result = lasso.coordinate_descent(max_iter=500) # 以块坐标下降为基准
-        f_star = min(cd_result)
+        # 计算基准：lasso目标函数的近似的理论最小值(使用scikit-learn快速计算f_star)
+        f_star = lasso.sklearn_solve()
         f_star = max(f_star, 0)
 
         # 运行所有算法
@@ -485,6 +466,10 @@ if __name__ == "__main__":
             [max(obj - f_star, 1e-10) for obj in lasso.admm(max_iter=max_iter, rho=1.0)]
         )
 
+        results['ADMM (punish=1.5)'].append(
+            [max(obj - f_star, 1e-10) for obj in lasso.admm(max_iter=max_iter, rho=1.5)]
+        )
+
         results['ADMM (punish=2.0)'].append(
             [max(obj - f_star, 1e-10) for obj in lasso.admm(max_iter=max_iter, rho=2.0)]
         )
@@ -502,10 +487,6 @@ if __name__ == "__main__":
             [max(obj - f_star, 1e-10) for obj in lasso.fista_restart(max_iter=max_iter)]
         )
 
-        # results['Smoothed FISTA (huber=1e-4)'].append(
-        #     [max(obj - f_star, 1e-10) for obj in lasso.smoothed_fista(max_iter=max_iter, epsilon=1e-4)]
-        # )
-
     # 绘图
     plt.figure(figsize=(12, 7))
     k_axis = np.arange(1, max_iter + 1)
@@ -522,7 +503,7 @@ if __name__ == "__main__":
         for single_trial in data_matrix:
             plt.plot(current_k_axis, single_trial,
                      color=cfg['color'],  # 与算法平均曲线同色
-                     alpha=0.2,
+                     alpha=0.15,
                      linewidth=0.5,
                      linestyle=cfg['style'])  # 与平均曲线同线条样式
 
@@ -541,8 +522,8 @@ if __name__ == "__main__":
     plt.title(f'Lasso Comparison (n_trials={n_trials})', fontsize=14)
     plt.legend(fontsize=9, loc='upper right', framealpha=0.9)
     plt.grid(True,alpha=0.4)
-    plt.ylim(bottom=1e-8, top=1)  # y轴范围
-    plt.xlim(0, 150)  # x轴迭代次数范围
+    plt.ylim(bottom=1e-6, top=1e2)  # y轴范围
+    plt.xlim(0, 100)  # x轴迭代次数范围
 
     plt.tight_layout()
     # plt.savefig('lasso_convergence.png', dpi=300, bbox_inches='tight')
