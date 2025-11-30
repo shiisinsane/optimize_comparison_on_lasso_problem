@@ -123,15 +123,10 @@ $$
 
 - 计算梯度分量： $c_j = a_j^T (b - A_{-j}x_{-j})$（排除第j个特征的贡献）
 
-- 软阈值更新: 
-$$
-x_j =
-\begin{cases}
-\dfrac{a_j^T c_j - \lambda}{\text{norm\_a\_sq}[j]} & \text{if } a_j^T c_j > \lambda, \\
-\dfrac{a_j^T c_j + \lambda}{\text{norm\_a\_sq}[j]} & \text{if } a_j^T c_j < -\lambda, \\
-0 & \text{otherwise}.
-\end{cases}
-$$
+- 软阈值更新:
+  
+![软阈值更新规则](CodeCogsEqn.png)
+
 
 
 ### 6. FISTA（加速的近端梯度下降）
