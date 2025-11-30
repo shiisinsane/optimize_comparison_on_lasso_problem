@@ -14,9 +14,9 @@ class LassoComparison:
         self.n_samples, self.n_features = A.shape
         self.device = device
         self.lambda_val = torch.tensor(lambda_val, device=self.device)
-        self.x_init = torch.zeros(self.n_features, device=device) # 初始化
+        #self.x_init = torch.zeros(self.n_features, device=device) # 初始化
         # 小随机初始化：正态分布(0, 0.01)，替换原全零
-        #self.x_init = torch.randn(self.n_features, device=device) * 0.01
+        self.x_init = torch.randn(self.n_features, device=device) * 0.01
 
         self.L = torch.linalg.norm(A, ord=2) ** 2  # Lipschitz常数，以下这些方法都使用自适应学习率
 
@@ -48,7 +48,7 @@ class LassoComparison:
         :return: 每一步的obj，列表形式存储
         """
         if lr is None:
-            lr = 1.0 / self.L # 基于Lipschitz的自适应学习率
+            lr = 1.0 / (self.L + 20) # 基于Lipschitz的自适应学习率
 
         x = self.x_init.clone()
         objs = []
@@ -68,9 +68,6 @@ class LassoComparison:
 
             lr = torch.tensor(lr, device=self.device)
             x = x - lr * gradient
-
-            # 投影到合理范围：截断，防止数值太大
-            x = torch.clamp(x, -1e3, 1e3)
 
             obj = self.obj(x)
             objs.append(obj.item())
@@ -99,7 +96,7 @@ class LassoComparison:
         :return: 每一步的obj，列表形式存储
         """
         if lr is None:
-            lr = 1.0 / self.L
+            lr = 1.0 / (self.L + 10)
 
         x = self.x_init.clone()
         objs = []
@@ -135,7 +132,7 @@ class LassoComparison:
         :return: 每一步的obj，列表形式存储
         """
         if lr is None:
-            lr = 1.0 / self.L
+            lr = 1.0 / (self.L + 20)
 
         epsilon = torch.tensor(epsilon, device=self.device)
 
@@ -389,9 +386,9 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(42)
 
-    n_trials = 5  # 试验次数
-    n_samples = 200
-    n_features = 500
+    n_trials = 10  # 试验次数
+    n_samples = 1000
+    n_features = 200
     sparsity = 0.1 # 稀疏程度
     lambda_val = 0.1  # 正则化系数
     max_iter = 300  # 迭代次数
@@ -522,7 +519,7 @@ if __name__ == "__main__":
     plt.title(f'Lasso Comparison (n_trials={n_trials})', fontsize=14)
     plt.legend(fontsize=9, loc='upper right', framealpha=0.9)
     plt.grid(True,alpha=0.4)
-    plt.ylim(bottom=1e-6, top=1e2)  # y轴范围
+    plt.ylim(bottom=1e-6, top=1e1)  # y轴范围
     plt.xlim(0, 100)  # x轴迭代次数范围
 
     plt.tight_layout()
